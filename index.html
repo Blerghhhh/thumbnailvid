@@ -419,12 +419,43 @@
 
 
 
+    // FileReader is more compatible with Android's content-provider-backed
+    // file selections than Blob.arrayBuffer() in some mobile browsers.
+    function readBlobAsArrayBuffer(blob, displayName = blob?.name || "selected file") {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (!(reader.result instanceof ArrayBuffer)) {
+            reject(new Error(`The browser returned no readable data for "${displayName}".`));
+            return;
+          }
+          resolve(reader.result);
+        };
+        reader.onerror = () => {
+          const reason = reader.error?.message || "the browser could not read the file";
+          reject(new Error(`Cannot read "${displayName}": ${reason}. If this is on Android, copy the file to local Downloads and select it again.`));
+        };
+        reader.onabort = () => reject(new Error(`Reading "${displayName}" was cancelled.`));
+        reader.readAsArrayBuffer(blob);
+      });
+    }
+
     async function writeFileToFS(name, blob) {
-
-      const data = new Uint8Array(await blob.arrayBuffer());
-
-      await ffmpeg.writeFile(name, data);
-
+      if (!blob) throw new Error(`No file was supplied for "${name}".`);
+      const displayName = blob.name || name;
+      let buffer;
+      try {
+        buffer = await readBlobAsArrayBuffer(blob, displayName);
+      } catch (readerError) {
+        // Try the modern Blob API as a fallback; preserve the clearer FileReader
+        // error if both APIs fail.
+        try {
+          buffer = await blob.arrayBuffer();
+        } catch {
+          throw readerError;
+        }
+      }
+      await ffmpeg.writeFile(name, new Uint8Array(buffer));
     }
 
 
