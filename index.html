@@ -275,70 +275,48 @@
 
 
     async function loadFFmpeg() {
-      setStatus("Loading FFmpeg core...");
+      if (ffmpeg) return ffmpeg;
 
-const baseURL =
-  "https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm";
+      const instance = new FFmpeg();
 
-const coreURL = `${baseURL}/ffmpeg-core.js`;
-const wasmURL = `${baseURL}/ffmpeg-core.wasm`;
+      instance.on("log", ({ message }) => {
+        if (captureLogs) captureLogs.push(message);
+        if (document.getElementById("verbose")?.checked) {
+          log(message);
+        }
+      });
 
-setStatus("Starting FFmpeg worker...");
+      instance.on("progress", ({ progress }) => {
+        if (Number.isFinite(progress)) {
+          progressEl.value = Math.round(progress * 100);
+        }
+      });
 
-const classWorkerURL = new URL(
-  "./ffmpeg/worker.js",
-  document.baseURI
-).href;
+      // Use matching ESM versions of the FFmpeg wrapper and core.
+      // The bootstrap is a module worker, so the official worker's relative
+      // imports (const.js and errors.js) resolve against the CDN URL.
+      setStatus("Preparing FFmpeg worker...");
+      const workerModuleURL =
+        "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/worker.js";
+      const workerBootstrap = `import ${JSON.stringify(workerModuleURL)};`;
+      const workerBlobURL = URL.createObjectURL(
+        new Blob([workerBootstrap], { type: "text/javascript" })
+      );
 
-await instance.load({
-  coreURL,
-  wasmURL,
-  classWorkerURL
-});
+      setStatus("Downloading FFmpeg WASM core...");
+      const coreBaseURL = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm";
+      const coreURL = `${coreBaseURL}/ffmpeg-core.js`;
+      const wasmURL = `${coreBaseURL}/ffmpeg-core.wasm`;
 
       try {
-        setStatus("Downloading FFmpeg WASM core...");
-        const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
-
-        const [coreURL, wasmURL] = await Promise.all([
-          toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
-          toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm")
-        ]);
-
-        // This must be the original ES-module worker, not a Blob made by
-        // concatenating worker.js, const.js, and errors.js.
-        const classWorkerURL = new URL("./ffmpeg/worker.js", document.baseURI).href;
-        setStatus("Starting FFmpeg worker...");
-
-        // Race against a timeout so a worker that never responds gives a
-        // useful error instead of leaving the UI indefinitely busy.
-        let timeoutId;
-        try {
-          await Promise.race([
-            instance.load({ coreURL, wasmURL, classWorkerURL }),
-            new Promise((_, reject) => {
-              timeoutId = setTimeout(() => {
-                reject(new Error(
-                  "FFmpeg worker initialization timed out after 45 seconds. " +
-                  "Check Console for worker/module errors and verify that " +
-                  "ffmpeg/worker.js, const.js, and errors.js load successfully."
-                ));
-              }, 45000);
-            })
-          ]);
-        } finally {
-          clearTimeout(timeoutId);
-        }
-
-        ffmpeg = instance;
-        setStatus("FFmpeg loaded.");
-        log("FFmpeg initialized successfully.");
-        return ffmpeg;
-      } catch (err) {
-        console.error("FFmpeg initialization failed:", err);
-        setStatus(`FFmpeg initialization failed: ${err?.message || err}`);
-        throw err;
+        await instance.load({ coreURL, wasmURL, classWorkerURL: workerBlobURL });
+      } finally {
+        URL.revokeObjectURL(workerBlobURL);
       }
+
+      ffmpeg = instance;
+      setStatus("FFmpeg loaded.");
+      return ffmpeg;
     }
 
     function extOf(name, fallback = ".bin") {
@@ -373,7 +351,7 @@ await instance.load({
 
       const fps = Math.min(1_000_000, Math.max(0.001, 1000 / ms));
 
-      const fpsStr = fps.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+      const fpsStr = fps.toFixed(6).replace(/\.?0+$/, "");
 
       const actualMs = 1000 / fps;
 
