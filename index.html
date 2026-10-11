@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Bulk prepend image to videos</title>
   
-  <!-- 1. REQUIRED: This enables SharedArrayBuffer by injecting security headers locally -->
+  <!-- REQUIRED: This enables SharedArrayBuffer by injecting security headers locally -->
   <script src="coi-serviceworker.js"></script>
 
   <style>
@@ -15,45 +15,21 @@
       margin: 24px auto;
       padding: 0 16px;
     }
-    fieldset {
-      margin: 12px 0;
-    }
-    .row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 12px;
-      align-items: center;
-      margin: 6px 0;
-    }
+    fieldset { margin: 12px 0; }
+    .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 6px 0; }
     #log {
-      background: #0b1020;
-      color: #b7ffd0;
-      padding: 10px;
-      border-radius: 8px;
-      height: 220px;
-      overflow: auto;
+      background: #0b1020; color: #b7ffd0; padding: 10px; border-radius: 8px;
+      height: 220px; overflow: auto;
       font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       white-space: pre-wrap;
     }
-    progress {
-      width: 100%;
-      height: 18px;
-    }
+    progress { width: 100%; height: 18px; }
     .warn {
-      background: #fff8e1;
-      border: 1px solid #f0d264;
-      padding: 10px 12px;
-      border-radius: 8px;
+      background: #fff8e1; border: 1px solid #f0d264;
+      padding: 10px 12px; border-radius: 8px;
     }
-    button {
-      padding: 10px 16px;
-      font-size: 16px;
-      cursor: pointer;
-    }
-    button:disabled {
-      opacity: 0.6;
-      cursor: wait;
-    }
+    button { padding: 10px 16px; font-size: 16px; cursor: pointer; }
+    button:disabled { opacity: 0.6; cursor: wait; }
   </style>
 </head>
 <body>
@@ -84,19 +60,16 @@
 
   <fieldset>
     <legend>Settings</legend>
-
     <div class="row">
       <label>
         Image duration in milliseconds:
         <input id="durationMs" type="number" min="0.001" step="0.01" value="0.10" style="width: 8rem" />
       </label>
-
       <label>
         <input id="syncAudio" type="checkbox" checked />
         Delay audio to match inserted duration when possible
       </label>
     </div>
-
     <div class="row">
       <label>
         Encoding preset:
@@ -109,12 +82,10 @@
           <option>medium</option>
         </select>
       </label>
-
       <label>
         Quality CRF:
         <input id="crf" type="number" min="0" max="51" step="1" value="23" style="width: 5rem" />
       </label>
-
       <label>
         <input id="verbose" type="checkbox" />
         Verbose FFmpeg log
@@ -123,22 +94,18 @@
   </fieldset>
 
   <button id="processBtn">Process videos</button>
-
   <p id="status"></p>
   <progress id="progress" max="100" value="0"></progress>
-
   <h2>Results</h2>
   <ol id="results"></ol>
-
   <h2>Log</h2>
   <pre id="log"></pre>
 
-  <!-- 2. Updated import map using esm.sh to fix the Worker CORS issues -->
   <script type="importmap">
     {
       "imports": {
-        "@ffmpeg/ffmpeg": "https://esm.sh/@ffmpeg/ffmpeg@0.12.10",
-        "@ffmpeg/util": "https://esm.sh/@ffmpeg/util@0.12.1"
+        "@ffmpeg/ffmpeg": "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js",
+        "@ffmpeg/util": "https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js"
       }
     }
   </script>
@@ -159,11 +126,9 @@
     function log(msg) {
       const line = typeof msg === "string" ? msg : String(msg);
       logEl.textContent += line + "\n";
-
       if (logEl.textContent.length > 250000) {
         logEl.textContent = logEl.textContent.slice(-120000);
       }
-
       logEl.scrollTop = logEl.scrollHeight;
     }
 
@@ -178,7 +143,6 @@
 
       instance.on("log", ({ message }) => {
         if (captureLogs) captureLogs.push(message);
-
         if (document.getElementById("verbose")?.checked) {
           log(message);
         }
@@ -191,14 +155,39 @@
       });
 
       setStatus("Downloading FFmpeg WASM core (~30 MB)...");
-
-      // Using jsdelivr for the core files to ensure reliable CORS headers
-      const baseURL = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd";
-
+      const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
       const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript");
       const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm");
 
-      await instance.load({ coreURL, wasmURL });
+      // --- BULLETPROOF FIX FOR WORKER CORS ERROR ---
+      // We fetch the worker files, strip imports/exports, and inline them into a single Blob.
+      // This makes the worker same-origin and completely bypasses CDN CORS restrictions.
+      setStatus("Preparing worker...");
+      const workerFiles = [
+        "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/const.js",
+        "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/errors.js",
+        "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/worker.js"
+      ];
+      
+      const codes = await Promise.all(workerFiles.map(async (url) => {
+        const res = await fetch(url);
+        let text = await res.text();
+        // Remove static export/import keywords to allow concatenation
+        text = text.replace(/export\s+(const|let|var|function|class|async)\s/g, '$1 ');
+        text = text.replace(/export\s*\{[^}]*\};?/g, '');
+        text = text.replace(/import\s+[^;]+;/g, '');
+        return text;
+      }));
+      
+      const workerCode = codes.join('\n');
+      const workerBlob = new Blob([workerCode], { type: 'text/javascript' });
+      const workerBlobURL = URL.createObjectURL(workerBlob);
+
+      await instance.load({ 
+        coreURL, 
+        wasmURL, 
+        classWorkerURL: workerBlobURL 
+      });
 
       ffmpeg = instance;
       setStatus("FFmpeg loaded.");
@@ -243,7 +232,6 @@
 
     async function probeHasAudio(inputName) {
       captureLogs = [];
-
       await execSafe([
         "-hide_banner",
         "-i", inputName,
@@ -251,10 +239,8 @@
         "-f", "null",
         "-"
       ]);
-
       const text = captureLogs.join("\n");
       captureLogs = null;
-
       return /Audio:/i.test(text);
     }
 
@@ -314,7 +300,7 @@
       const out = [];
       for (let i = 0; i < args.length; i++) {
         if (args[i] === "-af") {
-          i++; // skip the filter value too
+          i++;
           continue;
         }
         out.push(args[i]);
@@ -350,7 +336,6 @@
 
       if (syncAudio && intro.delayMs > 0) {
         const hasAudio = await probeHasAudio(inputName);
-
         if (hasAudio) {
           args.push("-af", `adelay=delays=${intro.delayMs}:all=1`);
           usedAf = true;
