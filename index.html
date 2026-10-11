@@ -275,22 +275,26 @@
 
 
     async function loadFFmpeg() {
-      if (ffmpeg) return ffmpeg;
+      setStatus("Loading FFmpeg core...");
 
-      const instance = new FFmpeg();
+const baseURL =
+  "https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm";
 
-      instance.on("log", ({ message }) => {
-        if (captureLogs) captureLogs.push(message);
-        if (document.getElementById("verbose")?.checked) {
-          log(message);
-        }
-      });
+const coreURL = `${baseURL}/ffmpeg-core.js`;
+const wasmURL = `${baseURL}/ffmpeg-core.wasm`;
 
-      instance.on("progress", ({ progress }) => {
-        if (Number.isFinite(progress)) {
-          progressEl.value = Math.round(progress * 100);
-        }
-      });
+setStatus("Starting FFmpeg worker...");
+
+const classWorkerURL = new URL(
+  "./ffmpeg/worker.js",
+  document.baseURI
+).href;
+
+await instance.load({
+  coreURL,
+  wasmURL,
+  classWorkerURL
+});
 
       try {
         setStatus("Downloading FFmpeg WASM core...");
