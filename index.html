@@ -249,17 +249,19 @@
     }
 
     async function loadFFmpeg() {
-      if (ffmpeg) return ffmpeg;
+const baseURL =
+  "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm";
 
-      const instance = new FFmpeg();
-
-      instance.on("log", ({ message }) => {
-        if (captureLogs) captureLogs.push(message);
-        if (document.getElementById("verbose")?.checked) {
-          log(message);
-        }
-      });
-
+const [coreURL, wasmURL] = await Promise.all([
+  toBlobURL(
+    `${baseURL}/ffmpeg-core.js`,
+    "text/javascript"
+  ),
+  toBlobURL(
+    `${baseURL}/ffmpeg-core.wasm`,
+    "application/wasm"
+  )
+]);
       instance.on("progress", ({ progress }) => {
         if (Number.isFinite(progress)) {
           progressEl.value = Math.round(progress * 100);
