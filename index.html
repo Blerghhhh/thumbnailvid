@@ -4,6 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Bulk prepend image to videos</title>
+  
+  <!-- 1. REQUIRED: This enables SharedArrayBuffer by injecting security headers locally -->
+  <script src="coi-serviceworker.js"></script>
+
   <style>
     body {
       font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
@@ -129,11 +133,12 @@
   <h2>Log</h2>
   <pre id="log"></pre>
 
+  <!-- 2. Updated import map using esm.sh to fix the Worker CORS issues -->
   <script type="importmap">
     {
       "imports": {
-        "@ffmpeg/ffmpeg": "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js",
-        "@ffmpeg/util": "https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js"
+        "@ffmpeg/ffmpeg": "https://esm.sh/@ffmpeg/ffmpeg@0.12.10",
+        "@ffmpeg/util": "https://esm.sh/@ffmpeg/util@0.12.1"
       }
     }
   </script>
@@ -155,7 +160,6 @@
       const line = typeof msg === "string" ? msg : String(msg);
       logEl.textContent += line + "\n";
 
-      // Keep the log from growing forever.
       if (logEl.textContent.length > 250000) {
         logEl.textContent = logEl.textContent.slice(-120000);
       }
@@ -188,7 +192,8 @@
 
       setStatus("Downloading FFmpeg WASM core (~30 MB)...");
 
-      const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm";
+      // Using jsdelivr for the core files to ensure reliable CORS headers
+      const baseURL = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd";
 
       const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript");
       const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm");
@@ -215,13 +220,7 @@
 
     function rationalFps(durationMs) {
       const ms = Math.max(0.001, Number(durationMs) || 0.1);
-
-      // fps = 1000 / ms
-      // Example:
-      // 0.10 ms -> 1000 / 0.10 = 10000 fps nominal
-      // One frame at 10000 fps is nominally 0.10 ms.
       const fps = Math.min(1_000_000, Math.max(0.001, 1000 / ms));
-
       const fpsStr = fps.toFixed(6).replace(/\.?0+$/, "");
       const actualMs = 1000 / fps;
 
@@ -330,12 +329,6 @@
 
       await writeFileToFS(inputName, file);
 
-      // Insert intro.mp4 before the original video.
-      //
-      // scale2ref scales the inserted image track to match the source video size.
-      // pad makes dimensions divisible by 2, which is required by many H.264 encoders.
-      // settb=AVTB normalizes the time base.
-      // concat order is: [intro][source]
       const filter = [
         "[1:v]setpts=PTS-STARTPTS[img];",
         "[img][0:v]scale2ref[logo][ref];",
@@ -359,8 +352,6 @@
         const hasAudio = await probeHasAudio(inputName);
 
         if (hasAudio) {
-          // adelay uses milliseconds.
-          // Fractional milliseconds are not reliably supported, so tiny durations may not delay audio.
           args.push("-af", `adelay=delays=${intro.delayMs}:all=1`);
           usedAf = true;
         } else {
@@ -387,7 +378,6 @@
 
       let ret = await execSafe(args);
 
-      // If audio delay caused a problem, retry without it.
       if (ret !== 0 && usedAf) {
         log("Retrying without audio delay filter...");
         ret = await execSafe(withoutAf(args));
@@ -422,7 +412,6 @@
       li.appendChild(link);
       resultsEl.appendChild(li);
 
-      // Keep the link alive briefly in case the automatic download is blocked.
       setTimeout(() => URL.revokeObjectURL(url), 60000);
 
       await ffmpeg.deleteFile(inputName).catch(() => {});
