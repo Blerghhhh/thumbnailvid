@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bulk prepend image to videos</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      max-width: 980px;
+      margin: 24px auto;
+      padding: 0 16px;
+    }
+    fieldset {
+      margin: 12px 0;
+    }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      margin: 6px 0;
+    }
+    #log {
+      background: #0b1020;
+      color: #b7ffd0;
+      padding: 10px;
+      border-radius: 8px;
+      height: 220px;
+      overflow: auto;
+      font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: pre-wrap;
+    }
+    progress {
+      width: 100%;
+      height: 18px;
+    }
+    .warn {
+      background: #fff8e1;
+      border: 1px solid #f0d264;
+      padding: 10px 12px;
+      border-radius: 8px;
+    }
+    button {
+      padding: 10px 16px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+    button:disabled {
+      opacity: 0.6;
+      cursor: wait;
+    }
+  </style>
+</head>
+<body>
+  <h1>Bulk prepend an image to videos — client-side</h1>
+
+  <div class="warn">
+    <strong>Important:</strong>
+    A true visible 0.10 ms frame is not practically meaningful. This tool can create a
+    nominal 0.10 ms first frame, but most players/displays cannot show that duration accurately.
+    If you want a visible single frame, try 16.67 ms, 33.33 ms, or 100 ms.
+  </div>
+
+  <fieldset>
+    <legend>Inputs</legend>
+    <div class="row">
+      <label>
+        Image to insert:
+        <input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp,image/*" />
+      </label>
+    </div>
+    <div class="row">
+      <label>
+        Videos to process:
+        <input id="videoInput" type="file" accept="video/*" multiple />
+      </label>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Settings</legend>
+
+    <div class="row">
+      <label>
+        Image duration in milliseconds:
+        <input id="durationMs" type="number" min="0.001" step="0.01" value="0.10" style="width: 8rem" />
+      </label>
+
+      <label>
+        <input id="syncAudio" type="checkbox" checked />
+        Delay audio to match inserted duration when possible
+      </label>
+    </div>
+
+    <div class="row">
+      <label>
+        Encoding preset:
+        <select id="preset">
+          <option>ultrafast</option>
+          <option>superfast</option>
+          <option selected>veryfast</option>
+          <option>faster</option>
+          <option>fast</option>
+          <option>medium</option>
+        </select>
+      </label>
+
+      <label>
+        Quality CRF:
+        <input id="crf" type="number" min="0" max="51" step="1" value="23" style="width: 5rem" />
+      </label>
+
+      <label>
+        <input id="verbose" type="checkbox" />
+        Verbose FFmpeg log
+      </label>
+    </div>
+  </fieldset>
+
+  <button id="processBtn">Process videos</button>
+
+  <p id="status"></p>
+  <progress id="progress" max="100" value="0"></progress>
+
+  <h2>Results</h2>
+  <ol id="results"></ol>
+
+  <h2>Log</h2>
+  <pre id="log"></pre>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "@ffmpeg/ffmpeg": "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js",
+        "@ffmpeg/util": "https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js"
+      }
+    }
+  </script>
+
+  <script type="module">
+    import { FFmpeg } from "@ffmpeg/ffmpeg";
+    import { toBlobURL } from "@ffmpeg/util";
+
+    const statusEl = document.getElementById("status");
+    const logEl = document.getElementById("log");
+    const progressEl = document.getElementById("progress");
+    const processBtn = document.getElementById("processBtn");
+    const resultsEl = document.getElementById("results");
+
+    let ffmpeg = null;
+    let captureLogs = null;
+
+    function log(msg) {
+      const line = typeof msg === "string" ? msg : String(msg);
+      logEl.textContent += line + "\n";
+
+      // Keep the log from growing forever.
+      if (logEl.textContent.length > 250000) {
+        logEl.textContent = logEl.textContent.slice(-120000);
+      }
+
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function setStatus(msg) {
+      statusEl.textContent = msg;
+    }
+
+    async function loadFFmpeg() {
+      if (ffmpeg) return ffmpeg;
+
+      const instance = new FFmpeg();
+
+      instance.on("log", ({ message }) => {
+        if (captureLogs) captureLogs.push(message);
+
+        if (document.getElementById("verbose")?.checked) {
+          log(message);
+        }
+      });
+
+      instance.on("progress", ({ progress }) => {
+        if (Number.isFinite(progress)) {
+          progressEl.value = Math.round(progress * 100);
+        }
+      });
+
+      setStatus("Downloading FFmpeg WASM core (~30 MB)...");
+
+      const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm";
+
+      const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript");
+      const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm");
+
+      await instance.load({ coreURL, wasmURL });
+
+      ffmpeg = instance;
+      setStatus("FFmpeg loaded.");
+      return ffmpeg;
+    }
+
+    function extOf(name, fallback = ".bin") {
+      const m = /\.([a-z0-9]+)$/i.exec(name || "");
+      return m ? `.${m[1].toLowerCase()}` : fallback;
+    }
+
+    function baseOf(name) {
+      return name.replace(/\.[^.]+$/, "");
+    }
+
+    function safeName(name) {
+      return name.replace(/[^\w.-]+/g, "_");
+    }
+
+    function rationalFps(durationMs) {
+      const ms = Math.max(0.001, Number(durationMs) || 0.1);
+
+      // fps = 1000 / ms
+      // Example:
+      // 0.10 ms -> 1000 / 0.10 = 10000 fps nominal
+      // One frame at 10000 fps is nominally 0.10 ms.
+      const fps = Math.min(1_000_000, Math.max(0.001, 1000 / ms));
+
+      const fpsStr = fps.toFixed(6).replace(/\.?0+$/, "");
+      const actualMs = 1000 / fps;
+
+      return {
+        fpsStr,
+        actualMs,
+        delayMs: Math.round(actualMs)
+      };
+    }
+
+    async function execSafe(args) {
+      try {
+        const ret = await ffmpeg.exec(args);
+        return typeof ret === "number" ? ret : 0;
+      } catch (err) {
+        log(`FFmpeg exec error: ${err?.message || err}`);
+        return -1;
+      }
+    }
+
+    async function probeHasAudio(inputName) {
+      captureLogs = [];
+
+      await execSafe([
+        "-hide_banner",
+        "-i", inputName,
+        "-t", "0",
+        "-f", "null",
+        "-"
+      ]);
+
+      const text = captureLogs.join("\n");
+      captureLogs = null;
+
+      return /Audio:/i.test(text);
+    }
+
+    async function writeFileToFS(name, blob) {
+      const data = new Uint8Array(await blob.arrayBuffer());
+      await ffmpeg.writeFile(name, data);
+    }
+
+    async function makeIntro(imageName, durationMs) {
+      const primary = rationalFps(durationMs);
+
+      const encoderArgs = [
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "18",
+        "-pix_fmt", "yuv420p",
+        "-video_track_timescale", "1000000",
+        "-vsync", "0",
+        "-y",
+        "intro.mp4"
+      ];
+
+      let ret = await execSafe([
+        "-loop", "1",
+        "-framerate", primary.fpsStr,
+        "-i", imageName,
+        "-frames:v", "1",
+        ...encoderArgs
+      ]);
+
+      if (ret === 0) {
+        return primary;
+      }
+
+      log(`Could not create intro at ${primary.fpsStr} fps; falling back to 30 fps one-frame intro.`);
+
+      ret = await execSafe([
+        "-loop", "1",
+        "-framerate", "30",
+        "-i", imageName,
+        "-frames:v", "1",
+        ...encoderArgs
+      ]);
+
+      if (ret !== 0) {
+        throw new Error("Could not create intro image video.");
+      }
+
+      return {
+        fpsStr: "30",
+        actualMs: 1000 / 30,
+        delayMs: Math.round(1000 / 30)
+      };
+    }
+
+    function withoutAf(args) {
+      const out = [];
+      for (let i = 0; i < args.length; i++) {
+        if (args[i] === "-af") {
+          i++; // skip the filter value too
+          continue;
+        }
+        out.push(args[i]);
+      }
+      return out;
+    }
+
+    async function processFile(file, index, intro) {
+      const inputExt = extOf(file.name, ".mp4");
+      const inputName = `input_${index}${inputExt}`;
+      const outputName = `output_${index}.mp4`;
+
+      await writeFileToFS(inputName, file);
+
+      // Insert intro.mp4 before the original video.
+      //
+      // scale2ref scales the inserted image track to match the source video size.
+      // pad makes dimensions divisible by 2, which is required by many H.264 encoders.
+      // settb=AVTB normalizes the time base.
+      // concat order is: [intro][source]
+      const filter = [
+        "[1:v]setpts=PTS-STARTPTS[img];",
+        "[img][0:v]scale2ref[logo][ref];",
+        "[logo]pad=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p,setsar=1,settb=AVTB,setpts=PTS-STARTPTS[logo2];",
+        "[ref]setpts=PTS-STARTPTS,pad=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p,setsar=1,settb=AVTB[main];",
+        "[logo2][main]concat=n=2:v=1:a=0[outv]"
+      ].join("");
+
+      const args = [
+        "-i", inputName,
+        "-i", "intro.mp4",
+        "-filter_complex", filter,
+        "-map", "[outv]",
+        "-map", "0:a:0?"
+      ];
+
+      const syncAudio = document.getElementById("syncAudio").checked;
+      let usedAf = false;
+
+      if (syncAudio && intro.delayMs > 0) {
+        const hasAudio = await probeHasAudio(inputName);
+
+        if (hasAudio) {
+          // adelay uses milliseconds.
+          // Fractional milliseconds are not reliably supported, so tiny durations may not delay audio.
+          args.push("-af", `adelay=delays=${intro.delayMs}:all=1`);
+          usedAf = true;
+        } else {
+          log(`${file.name}: no audio detected; skipping audio delay.`);
+        }
+      }
+
+      const preset = document.getElementById("preset").value || "veryfast";
+      const crf = String(document.getElementById("crf").value || 23);
+
+      args.push(
+        "-vsync", "0",
+        "-c:v", "libx264",
+        "-preset", preset,
+        "-crf", crf,
+        "-pix_fmt", "yuv420p",
+        "-video_track_timescale", "1000000",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-movflags", "+faststart",
+        "-y",
+        outputName
+      );
+
+      let ret = await execSafe(args);
+
+      // If audio delay caused a problem, retry without it.
+      if (ret !== 0 && usedAf) {
+        log("Retrying without audio delay filter...");
+        ret = await execSafe(withoutAf(args));
+      }
+
+      if (ret !== 0) {
+        await ffmpeg.deleteFile(inputName).catch(() => {});
+        throw new Error(`FFmpeg failed for ${file.name}`);
+      }
+
+      const data = await ffmpeg.readFile(outputName);
+      const blob = new Blob([data], { type: "video/mp4" });
+
+      const outName = `${safeName(baseOf(file.name)) || `video_${index}`}_prepended.mp4`;
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = outName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+
+      const li = document.createElement("li");
+      li.textContent = `${outName} — `;
+
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = outName;
+      link.textContent = "Download again";
+
+      li.appendChild(link);
+      resultsEl.appendChild(li);
+
+      // Keep the link alive briefly in case the automatic download is blocked.
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+
+      await ffmpeg.deleteFile(inputName).catch(() => {});
+      await ffmpeg.deleteFile(outputName).catch(() => {});
+    }
+
+    processBtn.addEventListener("click", async () => {
+      try {
+        const imageFile = document.getElementById("imageInput").files[0];
+        const videoFiles = Array.from(document.getElementById("videoInput").files || []);
+
+        if (!imageFile) {
+          alert("Choose an image first.");
+          return;
+        }
+
+        if (videoFiles.length === 0) {
+          alert("Choose one or more videos.");
+          return;
+        }
+
+        processBtn.disabled = true;
+        resultsEl.innerHTML = "";
+        progressEl.value = 0;
+        logEl.textContent = "";
+
+        await loadFFmpeg();
+
+        const imageName = `intro_image${extOf(imageFile.name, ".png")}`;
+        await writeFileToFS(imageName, imageFile);
+
+        try {
+          const durationMs = Number(document.getElementById("durationMs").value) || 0.1;
+
+          setStatus("Creating intro frame...");
+          const intro = await makeIntro(imageName, durationMs);
+
+          log(
+            `Intro created: nominal ${intro.actualMs.toFixed(3)} ms, ` +
+            `fps=${intro.fpsStr}, audio delay=${intro.delayMs} ms`
+          );
+
+          for (let i = 0; i < videoFiles.length; i++) {
+            setStatus(`Processing ${i + 1}/${videoFiles.length}: ${videoFiles[i].name}`);
+            progressEl.value = 0;
+            await processFile(videoFiles[i], i, intro);
+          }
+
+          setStatus(`Done. Processed ${videoFiles.length} file(s).`);
+          progressEl.value = 100;
+        } finally {
+          await ffmpeg.deleteFile("intro.mp4").catch(() => {});
+          await ffmpeg.deleteFile(imageName).catch(() => {});
+        }
+      } catch (err) {
+        console.error(err);
+        log(`ERROR: ${err?.message || err}`);
+        setStatus(`Error: ${err?.message || err}`);
+      } finally {
+        processBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
