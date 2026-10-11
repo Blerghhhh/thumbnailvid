@@ -10,9 +10,13 @@
 
   <title>Bulk prepend image to videos</title>
 
+
+
   <!-- REQUIRED: This enables SharedArrayBuffer by injecting security headers locally -->
 
   <script src="coi-serviceworker.js"></script>
+
+
 
   <style>
 
@@ -66,6 +70,8 @@
 
   <h1>Bulk prepend an image to videos — client-side</h1>
 
+
+
   <div class="warn">
 
     <strong>Important:</strong>
@@ -77,6 +83,8 @@
     If you want a visible single frame, try 16.67 ms, 33.33 ms, or 100 ms.
 
   </div>
+
+
 
   <fieldset>
 
@@ -107,6 +115,8 @@
     </div>
 
   </fieldset>
+
+
 
   <fieldset>
 
@@ -176,6 +186,8 @@
 
   </fieldset>
 
+
+
   <button id="processBtn">Process videos</button>
 
   <p id="status"></p>
@@ -189,6 +201,8 @@
   <h2>Log</h2>
 
   <pre id="log"></pre>
+
+
 
   <script type="importmap">
 
@@ -206,11 +220,15 @@
 
   </script>
 
+
+
   <script type="module">
 
     import { FFmpeg } from "@ffmpeg/ffmpeg";
 
     import { toBlobURL } from "@ffmpeg/util";
+
+
 
     const statusEl = document.getElementById("status");
 
@@ -222,9 +240,13 @@
 
     const resultsEl = document.getElementById("results");
 
+
+
     let ffmpeg = null;
 
     let captureLogs = null;
+
+
 
     function log(msg) {
 
@@ -242,26 +264,28 @@
 
     }
 
+
+
     function setStatus(msg) {
 
       statusEl.textContent = msg;
 
     }
 
-    async function loadFFmpeg() {
-const baseURL =
-  "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm";
 
-const [coreURL, wasmURL] = await Promise.all([
-  toBlobURL(
-    `${baseURL}/ffmpeg-core.js`,
-    "text/javascript"
-  ),
-  toBlobURL(
-    `${baseURL}/ffmpeg-core.wasm`,
-    "application/wasm"
-  )
-]);
+
+    async function loadFFmpeg() {
+      if (ffmpeg) return ffmpeg;
+
+      const instance = new FFmpeg();
+
+      instance.on("log", ({ message }) => {
+        if (captureLogs) captureLogs.push(message);
+        if (document.getElementById("verbose")?.checked) {
+          log(message);
+        }
+      });
+
       instance.on("progress", ({ progress }) => {
         if (Number.isFinite(progress)) {
           progressEl.value = Math.round(progress * 100);
@@ -270,46 +294,32 @@ const [coreURL, wasmURL] = await Promise.all([
 
       try {
         setStatus("Downloading FFmpeg WASM core...");
-        log("Loading FFmpeg core files.");
-
-        const baseURL =
-          "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
+        const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
 
         const [coreURL, wasmURL] = await Promise.all([
           toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
           toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm")
         ]);
 
+        // This must be the original ES-module worker, not a Blob made by
+        // concatenating worker.js, const.js, and errors.js.
+        const classWorkerURL = new URL("./ffmpeg/worker.js", document.baseURI).href;
         setStatus("Starting FFmpeg worker...");
-        log("Using the original FFmpeg ES-module worker.");
 
-        // These files must exist in the deployed site:
-        // ffmpeg/worker.js
-        // ffmpeg/const.js
-        // ffmpeg/errors.js
-        //
-        // Keep the original imports/exports intact. Do not concatenate
-        // module files or strip their import/export statements.
-        const classWorkerURL = new URL(
-          "./ffmpeg/worker.js",
-          import.meta.url
-        ).href;
-
+        // Race against a timeout so a worker that never responds gives a
+        // useful error instead of leaving the UI indefinitely busy.
         let timeoutId;
         try {
           await Promise.race([
-            instance.load({
-              coreURL,
-              wasmURL,
-              classWorkerURL
-            }),
+            instance.load({ coreURL, wasmURL, classWorkerURL }),
             new Promise((_, reject) => {
-              timeoutId = setTimeout(
-                () => reject(new Error(
-                  "FFmpeg worker initialization timed out after 45 seconds. Check the Network and Console tabs, and verify that ffmpeg/worker.js, const.js, and errors.js return HTTP 200."
-                )),
-                45000
-              );
+              timeoutId = setTimeout(() => {
+                reject(new Error(
+                  "FFmpeg worker initialization timed out after 45 seconds. " +
+                  "Check Console for worker/module errors and verify that " +
+                  "ffmpeg/worker.js, const.js, and errors.js load successfully."
+                ));
+              }, 45000);
             })
           ]);
         } finally {
@@ -322,14 +332,7 @@ const [coreURL, wasmURL] = await Promise.all([
         return ffmpeg;
       } catch (err) {
         console.error("FFmpeg initialization failed:", err);
-        try {
-          instance.terminate();
-        } catch (_) {
-          // Ignore cleanup errors while reporting the original failure.
-        }
-        const message = err?.message || String(err);
-        setStatus(`FFmpeg initialization failed: ${message}`);
-        log(`FFmpeg initialization failed: ${message}`);
+        setStatus(`FFmpeg initialization failed: ${err?.message || err}`);
         throw err;
       }
     }
@@ -342,11 +345,15 @@ const [coreURL, wasmURL] = await Promise.all([
 
     }
 
+
+
     function baseOf(name) {
 
       return name.replace(/\.[^.]+$/, "");
 
     }
+
+
 
     function safeName(name) {
 
@@ -354,15 +361,19 @@ const [coreURL, wasmURL] = await Promise.all([
 
     }
 
+
+
     function rationalFps(durationMs) {
 
       const ms = Math.max(0.001, Number(durationMs) || 0.1);
 
       const fps = Math.min(1_000_000, Math.max(0.001, 1000 / ms));
 
-      const fpsStr = fps.toFixed(6).replace(/\.?0+$/, "");
+      const fpsStr = fps.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
 
       const actualMs = 1000 / fps;
+
+
 
       return {
 
@@ -375,6 +386,8 @@ const [coreURL, wasmURL] = await Promise.all([
       };
 
     }
+
+
 
     async function execSafe(args) {
 
@@ -393,6 +406,8 @@ const [coreURL, wasmURL] = await Promise.all([
       }
 
     }
+
+
 
     async function probeHasAudio(inputName) {
 
@@ -420,6 +435,8 @@ const [coreURL, wasmURL] = await Promise.all([
 
     }
 
+
+
     async function writeFileToFS(name, blob) {
 
       const data = new Uint8Array(await blob.arrayBuffer());
@@ -428,9 +445,13 @@ const [coreURL, wasmURL] = await Promise.all([
 
     }
 
+
+
     async function makeIntro(imageName, durationMs) {
 
       const primary = rationalFps(durationMs);
+
+
 
       const encoderArgs = [
 
@@ -452,6 +473,8 @@ const [coreURL, wasmURL] = await Promise.all([
 
       ];
 
+
+
       let ret = await execSafe([
 
         "-loop", "1",
@@ -466,13 +489,19 @@ const [coreURL, wasmURL] = await Promise.all([
 
       ]);
 
+
+
       if (ret === 0) {
 
         return primary;
 
       }
 
+
+
       log(`Could not create intro at ${primary.fpsStr} fps; falling back to 30 fps one-frame intro.`);
+
+
 
       ret = await execSafe([
 
@@ -488,11 +517,15 @@ const [coreURL, wasmURL] = await Promise.all([
 
       ]);
 
+
+
       if (ret !== 0) {
 
         throw new Error("Could not create intro image video.");
 
       }
+
+
 
       return {
 
@@ -505,6 +538,8 @@ const [coreURL, wasmURL] = await Promise.all([
       };
 
     }
+
+
 
     function withoutAf(args) {
 
@@ -528,6 +563,8 @@ const [coreURL, wasmURL] = await Promise.all([
 
     }
 
+
+
     async function processFile(file, index, intro) {
 
       const inputExt = extOf(file.name, ".mp4");
@@ -536,7 +573,11 @@ const [coreURL, wasmURL] = await Promise.all([
 
       const outputName = `output_${index}.mp4`;
 
+
+
       await writeFileToFS(inputName, file);
+
+
 
       const filter = [
 
@@ -552,6 +593,8 @@ const [coreURL, wasmURL] = await Promise.all([
 
       ].join("");
 
+
+
       const args = [
 
         "-i", inputName,
@@ -566,9 +609,13 @@ const [coreURL, wasmURL] = await Promise.all([
 
       ];
 
+
+
       const syncAudio = document.getElementById("syncAudio").checked;
 
       let usedAf = false;
+
+
 
       if (syncAudio && intro.delayMs > 0) {
 
@@ -588,9 +635,13 @@ const [coreURL, wasmURL] = await Promise.all([
 
       }
 
+
+
       const preset = document.getElementById("preset").value || "veryfast";
 
       const crf = String(document.getElementById("crf").value || 23);
+
+
 
       args.push(
 
@@ -618,7 +669,11 @@ const [coreURL, wasmURL] = await Promise.all([
 
       );
 
+
+
       let ret = await execSafe(args);
+
+
 
       if (ret !== 0 && usedAf) {
 
@@ -628,6 +683,8 @@ const [coreURL, wasmURL] = await Promise.all([
 
       }
 
+
+
       if (ret !== 0) {
 
         await ffmpeg.deleteFile(inputName).catch(() => {});
@@ -636,13 +693,19 @@ const [coreURL, wasmURL] = await Promise.all([
 
       }
 
+
+
       const data = await ffmpeg.readFile(outputName);
 
       const blob = new Blob([data], { type: "video/mp4" });
 
+
+
       const outName = `${safeName(baseOf(file.name)) || `video_${index}`}_prepended.mp4`;
 
       const url = URL.createObjectURL(blob);
+
+
 
       const a = document.createElement("a");
 
@@ -656,9 +719,13 @@ const [coreURL, wasmURL] = await Promise.all([
 
       a.remove();
 
+
+
       const li = document.createElement("li");
 
       li.textContent = `${outName} — `;
+
+
 
       const link = document.createElement("a");
 
@@ -668,17 +735,25 @@ const [coreURL, wasmURL] = await Promise.all([
 
       link.textContent = "Download again";
 
+
+
       li.appendChild(link);
 
       resultsEl.appendChild(li);
 
+
+
       setTimeout(() => URL.revokeObjectURL(url), 60000);
+
+
 
       await ffmpeg.deleteFile(inputName).catch(() => {});
 
       await ffmpeg.deleteFile(outputName).catch(() => {});
 
     }
+
+
 
     processBtn.addEventListener("click", async () => {
 
@@ -688,6 +763,8 @@ const [coreURL, wasmURL] = await Promise.all([
 
         const videoFiles = Array.from(document.getElementById("videoInput").files || []);
 
+
+
         if (!imageFile) {
 
           alert("Choose an image first.");
@@ -695,6 +772,8 @@ const [coreURL, wasmURL] = await Promise.all([
           return;
 
         }
+
+
 
         if (videoFiles.length === 0) {
 
@@ -704,6 +783,8 @@ const [coreURL, wasmURL] = await Promise.all([
 
         }
 
+
+
         processBtn.disabled = true;
 
         resultsEl.innerHTML = "";
@@ -712,19 +793,29 @@ const [coreURL, wasmURL] = await Promise.all([
 
         logEl.textContent = "";
 
+
+
         await loadFFmpeg();
+
+
 
         const imageName = `intro_image${extOf(imageFile.name, ".png")}`;
 
         await writeFileToFS(imageName, imageFile);
 
+
+
         try {
 
           const durationMs = Number(document.getElementById("durationMs").value) || 0.1;
 
+
+
           setStatus("Creating intro frame...");
 
           const intro = await makeIntro(imageName, durationMs);
+
+
 
           log(
 
@@ -733,6 +824,8 @@ const [coreURL, wasmURL] = await Promise.all([
             `fps=${intro.fpsStr}, audio delay=${intro.delayMs} ms`
 
           );
+
+
 
           for (let i = 0; i < videoFiles.length; i++) {
 
@@ -743,6 +836,8 @@ const [coreURL, wasmURL] = await Promise.all([
             await processFile(videoFiles[i], i, intro);
 
           }
+
+
 
           setStatus(`Done. Processed ${videoFiles.length} file(s).`);
 
