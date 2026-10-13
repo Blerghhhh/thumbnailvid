@@ -460,13 +460,42 @@
 
 
 
-    async function makeIntro(imageName, durationMs) {
+    async function getEvenImageDimensions(file) {
+      let width, height;
+      if (typeof createImageBitmap === "function") {
+        const bitmap = await createImageBitmap(file);
+        width = bitmap.width;
+        height = bitmap.height;
+        bitmap.close?.();
+      } else {
+        const url = URL.createObjectURL(file);
+        try {
+          const image = new Image();
+          await new Promise((resolve, reject) => {
+            image.onload = resolve;
+            image.onerror = () => reject(new Error(`Could not decode thumbnail "${file.name}".`));
+            image.src = url;
+          });
+          width = image.naturalWidth;
+          height = image.naturalHeight;
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+      }
+      if (!width || !height) throw new Error("Could not determine the thumbnail dimensions.");
+      // H.264 yuv420p requires even dimensions; pad odd images by at most one pixel.
+      return { width: width + (width % 2), height: height + (height % 2) };
+    }
+
+    async function makeIntro(imageName, durationMs, canvasWidth, canvasHeight) {
 
       const primary = rationalFps(durationMs);
 
 
 
       const encoderArgs = [
+
+        "-vf", `pad=${canvasWidth}:${canvasHeight}:0:0,format=yuv420p`,
 
         "-c:v", "libx264",
 
@@ -578,7 +607,7 @@
 
 
 
-    async function processFile(file, index, intro) {
+    async function processFile(file, index, intro, canvasWidth, canvasHeight) {
 
       const inputExt = extOf(file.name, ".mp4");
 
@@ -592,20 +621,13 @@
 
 
 
+      // The thumbnail defines the output canvas. Fit each video inside it
+      // without stretching; letterbox/pillarbox with black where needed.
       const filter = [
-
-        "[1:v]setpts=PTS-STARTPTS[img];",
-
-        "[img][0:v]scale2ref[logo][ref];",
-
-        "[logo]pad=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p,setsar=1,settb=AVTB,setpts=PTS-STARTPTS[logo2];",
-
-        "[ref]setpts=PTS-STARTPTS,pad=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p,setsar=1,settb=AVTB[main];",
-
-        "[logo2][main]concat=n=2:v=1:a=0[outv]"
-
+        "[1:v]setpts=PTS-STARTPTS,format=yuv420p,setsar=1,settb=AVTB[img];",
+        `[0:v]setpts=PTS-STARTPTS,scale=${canvasWidth}:${canvasHeight}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=${canvasWidth}:${canvasHeight}:(ow-iw)/2:(oh-ih)/2:color=black,format=yuv420p,setsar=1,settb=AVTB[main];`,
+        "[img][main]concat=n=2:v=1:a=0[outv]"
       ].join("");
-
 
 
       const args = [
@@ -812,6 +834,9 @@
 
 
 
+        const { width: canvasWidth, height: canvasHeight } = await getEvenImageDimensions(imageFile);
+        log(`Output canvas: ${canvasWidth} × ${canvasHeight} (based on thumbnail dimensions).`);
+
         const imageName = `intro_image${extOf(imageFile.name, ".png")}`;
 
         await writeFileToFS(imageName, imageFile);
@@ -826,7 +851,7 @@
 
           setStatus("Creating intro frame...");
 
-          const intro = await makeIntro(imageName, durationMs);
+          const intro = await makeIntro(imageName, durationMs, canvasWidth, canvasHeight);
 
 
 
@@ -846,7 +871,7 @@
 
             progressEl.value = 0;
 
-            await processFile(videoFiles[i], i, intro);
+            await processFile(videoFiles[i], i, intro, canvasWidth, canvasHeight);
 
           }
 
